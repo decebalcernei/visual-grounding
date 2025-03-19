@@ -4,6 +4,7 @@ from PIL import Image, ImageDraw, ImageFont
 from torch.utils.data import DataLoader
 import torch
 import torch.utils.data as data
+from torchvision import transforms
 
 
 def create_merged_df(pickle_file_path, annotations_file_path):
@@ -70,11 +71,12 @@ def modify_filename(file_name):
 
 class VisualGroundingRefcocog(data.Dataset):
     # Mandatory methods are __init__, __len__ and __getitem__
-    def __init__(self, dataset):
+    def __init__(self, dataset, transform=None):
         
         self.images = dataset['file_name'].tolist()
         self.descriptions = dataset['sentences'].tolist()
         self.bboxes = []
+        self.transform = transform
         
         for bbox in dataset['bbox'].tolist():
             updated_bbox = xywh2xyxy(bbox)
@@ -87,9 +89,13 @@ class VisualGroundingRefcocog(data.Dataset):
 
     def __getitem__(self, idx):
         
-        image = image = Image.open(self.images[idx])
+        image = Image.open(self.images[idx])
         description = self.descriptions[idx]
         bbox = self.bboxes[idx]
+
+        # To apply transformations (also to transform the image into tensor so the DataLoader is happy)
+        if self.transform:
+            image = self.transform(image)
 
         sample = {
             'image': image,
@@ -185,3 +191,11 @@ def compare_bbox(image, pred_bbox, label_bbox, caption=None, color1="green", col
         draw.text((5, 5), caption, fill="white")
     
     image.show()
+
+
+def create_transform():
+    transform = transforms.Compose([
+        transforms.ToTensor()  # From PIL image to tensor
+    ])
+
+    return transform

@@ -1,7 +1,8 @@
 from PIL import Image, ImageDraw
-from util import create_merged_df, VisualGroundingRefcocog, get_dataloader
+from util import create_merged_df, VisualGroundingRefcocog, get_dataloader, create_transform
 from functions import eval_loop
 import warnings
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -16,18 +17,19 @@ def main():
     #val_df   = whole_df.loc[whole_df['split'] == 'val']
     test_df  = whole_df.loc[whole_df['split'] == 'test']
 
+    transform = create_transform()
     
     #train_dataset = VisualGroundingRefcocog(train_df)
     #val_dataset = VisualGroundingRefcocog(val_df)
-    test_dataset = VisualGroundingRefcocog(test_df) # has 5024 elements
+    test_dataset = VisualGroundingRefcocog(test_df)#, transform=transform) # has 5024 elements
     
     #train_dataloader = get_dataloader(train_dataset, batch_size)
     #val_dataloader = get_dataloader(val_dataset, batch_size)
     test_dataloader = get_dataloader(test_dataset, batch_size)
 
-    result = eval_loop(test_dataset)
+    result, mean_iou = eval_loop(test_dataset)
 
-    print(f"the result is {result}")
+    print(f"Accuracy is {result}  -----  Mean IoU is {mean_iou}")
 
 
 

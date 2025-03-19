@@ -6,6 +6,36 @@ from util import draw_bbox
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
+def yolo_model(model, image):
+    # Model
+    # we will pass it to not load it each time
+    #model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
+
+    # Inference
+    results = model(image)
+
+    # Results
+    
+    """
+    results: xmin    ymin    xmax   ymax  confidence  class    name
+    """
+    bboxes = results.xyxy[0].cpu().numpy()
+    
+    bboxes = [bbox[:4] for bbox in bboxes] # take only the coordinates of the bbox
+
+    
+    cropped_images = []
+    for bbox in bboxes:
+        xmin, ymin, xmax, ymax = bbox
+
+        # get the content of each bbox
+        cropped_img = image.crop((xmin, ymin, xmax, ymax))
+        cropped_images.append(cropped_img)
+
+    return cropped_images, bboxes
+
+
 def clip_model(model, preprocess, regions, bboxes, description):
     # Load the model and the preprocess
     # to not load it everytime we pass it
@@ -43,32 +73,3 @@ def clip_model(model, preprocess, regions, bboxes, description):
     pred_bbox = bboxes[max_prob_index]
 
     return pred_bbox
-
-
-def yolo_model(model, image):
-    # Model
-    # we will pass it to not load it each time
-    #model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
-
-    # Inference
-    results = model(image)
-
-    # Results
-    
-    """
-    results: xmin    ymin    xmax   ymax  confidence  class    name
-    """
-    bboxes = results.xyxy[0].cpu().numpy()
-    
-    bboxes = [bbox[:4] for bbox in bboxes] # take only the coordinates of the bbox
-
-    
-    cropped_images = []
-    for bbox in bboxes:
-        xmin, ymin, xmax, ymax = bbox
-
-        # get the content of each bbox
-        cropped_img = image.crop((xmin, ymin, xmax, ymax))
-        cropped_images.append(cropped_img)
-
-    return cropped_images, bboxes
