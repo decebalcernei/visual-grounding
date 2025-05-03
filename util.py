@@ -75,12 +75,8 @@ class VisualGroundingRefcocog(data.Dataset):
         
         self.images = dataset['file_name'].tolist()
         self.descriptions = dataset['sentences'].tolist()
-        self.bboxes = []
+        self.bboxes = [xywh2xyxy(bbox) for bbox in dataset['bbox'].tolist()]
         self.transform = transform
-        
-        for bbox in dataset['bbox'].tolist():
-            updated_bbox = xywh2xyxy(bbox)
-            self.bboxes.append(updated_bbox)
 
 
     def __len__(self):

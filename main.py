@@ -1,6 +1,6 @@
 from PIL import Image, ImageDraw
 from util import create_merged_df, VisualGroundingRefcocog, get_dataloader, create_transform
-from functions import eval_loop
+from functions import eval_loop, model_test
 import warnings
 from tqdm import tqdm
 
@@ -31,6 +31,7 @@ def main():
 
     print(f"Accuracy is {result}  -----  Mean IoU is {mean_iou}")
 
+    model_test(test_dataset)
 
 
 if __name__ == "__main__":

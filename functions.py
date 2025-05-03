@@ -2,8 +2,10 @@ import torch
 import clip
 from baseline import yolo_model, clip_model
 from util import calculate_IoU, compare_bbox, draw_bbox
+from model import VisualLanguisticTranformer
 from tqdm import tqdm
 import numpy as np
+from types import SimpleNamespace
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -30,3 +32,15 @@ def eval_loop(data):
             total += 1
 
     return correct/total, np.asarray(iou_array).mean()
+
+
+def model_test(data):
+    model, preprocess = clip.load("RN50", device="cpu")
+
+    vg = VisualLanguisticTranformer(model)
+
+    with torch.no_grad(): # It used to avoid the creation of computational graph
+        for sample in tqdm(data, desc="Processing Test Data"):
+            tokens = clip.tokenize(sample['description'])
+            image = preprocess(sample['image']).unsqueeze(0)
+            vg(image, tokens)
