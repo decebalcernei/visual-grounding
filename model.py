@@ -18,42 +18,85 @@ import torch
 import torch.nn as nn
 import numpy as np
 import types
+from transformer import PositionalEncoding, build_encoder_stack
 
 
 class VisualLanguisticTranformer(nn.Module):
 
-    def __init__(self, clip_model):
+    def __init__(self, num_encoders, clip_model):
         super(VisualLanguisticTranformer, self).__init__()
 
         # modified_part = types.MethodType(new_part, where_to_attach_it_to)
         clip_model.visual.forward = types.MethodType(modified_visual_forward, clip_model.visual)
         clip_model.encode_text = types.MethodType(modified_encode_text, clip_model)
         self.clip_model = clip_model
+        # we want to keep froze the CLIP's encoders.
+        for param in self.clip_model.parameters():
+            param.requires_grad = False
+
+        self.clip_model.eval()
+        self.clip_model.float() # -> defaulf is float16, and pytorch default is float32. with .float() we make everything float32
+
         self.visual_projection_layer = nn.Linear(2048, 256)
         self.textual_projection_layer = nn.Linear(1024, 256)
+        self.positional_encoding = PositionalEncoding(d_model=256, seq_len=127, dropout=0.1)
+        self.encoder_stack = build_encoder_stack(num_encoders=num_encoders, d_model=256, h=8, dropout=0.1, d_ff=2048)
+        self.prediction_head = PredictionHead(hidden_dim=256)
+
+
 
 
     def forward(self, image, text):
-        with torch.no_grad():
-            # print(image.shape) # (batch_size, 3, 224, 224)
-            image_embeds = self.clip_model.visual(image) # (batch_size, 2048, 7, 7) # before modifying the visual (batch_size, 1024)
-            text_embeds = self.clip_model.encode_text(text) # (batch_size, 77, 1024)
+        #print(image.shape) # (batch_size, 3, 224, 224)
+        image_embeds = self.clip_model.visual(image) # (batch_size, 2048, 7, 7) # before modifying the visual (batch_size, 1024)
+        textual_mask = torch.where(text != 0, 1, 0) # 1 where the element is not PAD and 0 where it is
+        text_embeds = self.clip_model.encode_text(text) # (batch_size, 77, 1024)
+        image_features_flattened = image_embeds.flatten(start_dim=2, end_dim=-1).permute(0, 2, 1) # (batch_size, 49, 2048)
+        text_features_flattened = text_embeds # (batch_size, 77, 1024)
 
-            image_features_flattened = image_embeds.flatten(start_dim=2, end_dim=-1) # (batch_size, 2048, 49)
-            text_features_flatten = text_embeds.permute(0, 2, 1) # (batch_size, 1024, 77)
+        projected_visual = self.visual_projection_layer(image_features_flattened) # (batch_size, 49, 256)
+        projected_textual = self.textual_projection_layer(text_features_flattened)  # (batch_size, 77, 256)
+        reg_token = torch.zeros(projected_textual.shape[0], 1, projected_textual.shape[-1]).to(projected_textual.device) # (batch_size, 1, 256)
 
-            projected_visual = self.visual_projection_layer(image_features_flattened.permute(0, 2, 1))
-            projected_textual = self.textual_projection_layer(text_features_flatten.permute(0, 2, 1))
+        # dim -> the dimension over which the tensors are concatenated (can be differet among the tensors, the other shapes must match)
+        x = torch.cat((projected_visual, projected_textual, reg_token), dim=1) # (batch_size, 49+77+1, 256)
 
-            print(projected_visual.permute(0, 2, 1).shape)
-            print(projected_textual.permute(0, 2, 1).shape)
-            reg_token = torch.zeros(1, 256, 1)
-            print(reg_token.shape)
-            exit()
+        # add the positional encoding to the input
+        x = self.positional_encoding(x)
+        # for the mask to pass to the encoder stack we just use the attention mask of the textual tokens
+        # this is because we don't have any padding for the image [we resize it to 224, 224 without putting any padding]
+        # and the reg token doesn't also have padding of course. We concatenate these masks to create the one for the whole sequence
+        batch_size = projected_visual.shape[0]
+        visual_mask = torch.ones(batch_size, projected_visual.shape[1]).to(textual_mask.device)
+        reg_mask = torch.ones(batch_size, 1).to(textual_mask.device)
 
-        return 0
+        mask = torch.cat((visual_mask, textual_mask, reg_mask), dim=1) # (batch_size, 127)
+
+        mask = mask.unsqueeze(1).unsqueeze(2)  # (batch_size, 1, 1, 127)
+
+        output_encoder_stack = self.encoder_stack(x, mask) # (batch_size, 127, 256)
+        educated_reg_token = output_encoder_stack[:, -1, :] # now it's educated after having access to both visual and linguistic tokens # (batch_size, 256)
+        predicted_bbox = self.prediction_head(educated_reg_token) # (batch_size, 4)
+        return predicted_bbox
 
 
+
+class PredictionHead(nn.Module):
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.hidden_layer_1 = nn.Linear(hidden_dim, hidden_dim)
+        self.activation = nn.ReLU()
+        self.hidden_layer_2 = nn.Linear(hidden_dim, hidden_dim)
+        self.output_layer   = nn.Linear(hidden_dim, 4) # 4 coordinates of the bbox
+
+    def forward(self, x):
+        x = self.hidden_layer_1(x)
+        x = self.activation(x)
+        x = self.hidden_layer_2(x)
+        x = self.activation(x)
+        x = self.output_layer(x)
+
+        return x
 
 
 def modified_visual_forward(self, x: torch.Tensor):

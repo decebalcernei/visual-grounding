@@ -1,10 +1,11 @@
 import pandas as pd
 import json
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from torch.utils.data import DataLoader
 import torch
 import torch.utils.data as data
 from torchvision import transforms
+import torchvision.transforms.functional as F
 
 
 def create_merged_df(pickle_file_path, annotations_file_path):
@@ -71,12 +72,14 @@ def modify_filename(file_name):
 
 class VisualGroundingRefcocog(data.Dataset):
     # Mandatory methods are __init__, __len__ and __getitem__
-    def __init__(self, dataset, transform=None):
+    def __init__(self, dataset, tokenizer, modified_clip_preprocess=None, bbox_transform=None):
         
         self.images = dataset['file_name'].tolist()
         self.descriptions = dataset['sentences'].tolist()
         self.bboxes = [xywh2xyxy(bbox) for bbox in dataset['bbox'].tolist()]
-        self.transform = transform
+        self.transform = modified_clip_preprocess
+        self.bbox_transform = bbox_transform
+        self.tokenizer = tokenizer
 
 
     def __len__(self):
@@ -84,14 +87,30 @@ class VisualGroundingRefcocog(data.Dataset):
 
 
     def __getitem__(self, idx):
-        
+
         image = Image.open(self.images[idx])
         description = self.descriptions[idx]
         bbox = self.bboxes[idx]
 
-        # To apply transformations (also to transform the image into tensor so the DataLoader is happy)
+        # We directly apply the CLIP's modified preprocess to the images
+        """
+            Why we modify the CLIP's preprocess? Because it performs a center crop of the image
+            and we dont want that. We want to keep the whole image and not risk to cut away our
+            object of interest.
+        """
+        #path_saving_folder = "/home/dec/uni/dl/visual-grounding/tests"
+        #original_path = path_saving_folder + "/original_no_normalization.png"
+        #resized_path = path_saving_folder + "/resized_no_normalization.png"
+
+        description = self.tokenizer(description).squeeze() # (1, 77) -> (77)
+
         if self.transform:
+            original_width, original_height = image.size
             image = self.transform(image)
+
+        if self.bbox_transform:
+            bbox = self.bbox_transform(bbox, (original_width, original_height), (224, 224))
+
 
         sample = {
             'image': image,
@@ -108,41 +127,36 @@ def get_dataloader(dataset, batch_size):
         dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=2
+        #num_workers=2
     )
 
     return data_loader
 
 
 def calculate_IoU(x_bbox, y_bbox):
-
-    xmin1, ymin1, xmax1, ymax1 = x_bbox
-    xmin2, ymin2, xmax2, ymax2 = y_bbox
+    """
+    Calculate IoU between two batches of bounding boxes.
+    x_bbox, y_bbox: tensors of shape (batch_size, 4)
+    Returns: tensor of IoU values, shape (batch_size)
+    """
 
     # get intersection's coordinates
-    inter_xmin = max(xmin1, xmin2)
-    inter_ymin = max(ymin1, ymin2)
-    inter_xmax = min(xmax1, xmax2)
-    inter_ymax = min(ymax1, ymax2)
+    inter_xmin = torch.max(x_bbox[:, 0], y_bbox[:, 0])
+    inter_ymin = torch.max(x_bbox[:, 1], y_bbox[:, 1])
+    inter_xmax = torch.min(x_bbox[:, 2], y_bbox[:, 2])
+    inter_ymax = torch.min(x_bbox[:, 3], y_bbox[:, 3])
 
-    # there is no intersection
-    if inter_xmax <= inter_xmin or inter_ymax <= inter_ymin:
-        iou = 0
+    # clamp to zero when no intersection
+    inter_w = (inter_xmax - inter_xmin).clamp(min=0)
+    inter_h = (inter_ymax - inter_ymin).clamp(min=0)
+    intersection = inter_w * inter_h
 
-    else:
-        # calculate the intersection area
-        intersection_area = (inter_xmax - inter_xmin) * (inter_ymax - inter_ymin)
+    # areas
+    area_x = (x_bbox[:, 2] - x_bbox[:, 0]) * (x_bbox[:, 3] - x_bbox[:, 1])
+    area_y = (y_bbox[:, 2] - y_bbox[:, 0]) * (y_bbox[:, 3] - y_bbox[:, 1])
+    union = area_x + area_y - intersection
 
-        # calculate the area of each bbox
-        area_bbox1 = (xmax1 - xmin1) * (ymax1 - ymin1)
-        area_bbox2 = (xmax2 - xmin2) * (ymax2 - ymin2)
-
-        # calculate the union area
-        union_area = area_bbox1 + area_bbox2 - intersection_area
-
-        # calculate the intersectio over union
-        iou = intersection_area / union_area
-    
+    iou = intersection / union.clamp(min=1e-6)
     return iou
 
 
@@ -150,6 +164,11 @@ def xywh2xyxy(bbox):
     '''
     refcocog labels are in the format x y w h
     yolo are xmin ymin xmax ymax
+
+    Input format:
+            bbox         = [x, y, w, h]
+        Output:
+            updated_bbox = [x, y, x, y]
     '''
     xmin, ymin, w, h = bbox
     
@@ -161,17 +180,25 @@ def xywh2xyxy(bbox):
     return updated_bbox
 
 
-def draw_bbox(image, bbox, color, caption=None):
-    #img = Image.open(image_path)
-    
+def draw_bbox(image, bbox, color, save_path=None, caption=None):
+    """
+    image is a tensor (C, H, W) and bbox is an array of the 4 coordinates
+    """
     xmin, ymin, xmax, ymax = bbox
-    
+
+    if isinstance(image, torch.Tensor):
+        image = F.to_pil_image(image)
+
     draw = ImageDraw.Draw(image)
     draw.rectangle([xmin, ymin, xmax, ymax], outline=color, width=3)
     if caption is not None:
         draw.text((5, 5), caption, fill="white")
     
-    image.show()
+    if save_path is not None:
+        image.save(save_path)
+    else:
+        image.show()
+
 
 
 def compare_bbox(image, pred_bbox, label_bbox, caption=None, color1="green", color2="red"):
@@ -189,9 +216,55 @@ def compare_bbox(image, pred_bbox, label_bbox, caption=None, color1="green", col
     image.show()
 
 
-def create_transform():
+def modified_clip_preprocess():
+    """
+    The original CLIP's preprocess is the following:
+    Compose(
+        Resize(size=224, interpolation=bicubic, max_size=None, antialias=True)
+        CenterCrop(size=(224, 224))
+        <function _convert_image_to_rgb at 0x744263e27ba0>
+        ToTensor()
+        Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
+    )
+    """
+    """
+    Note that torchvision.transforms.Compose expects callables (i.e., functions or objects you can "call") as transformations
+    
+    transforms.Lambda(lambda img: img.convert("RGB")) is equivalent to
+    
+    def convert_rgb(img):
+        return img.convert("RGB")
+
+    transforms.Lambda(convert_rgb)
+    """
     transform = transforms.Compose([
-        transforms.ToTensor()  # From PIL image to tensor
+        transforms.Resize(size=(224, 224), interpolation=Image.BICUBIC, antialias=True),
+        transforms.Lambda(lambda img: img.convert("RGB")),  # to rgb
+        transforms.ToTensor(), # from PIL image to tensor
+        #transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073),
+                  #std=(0.26862954, 0.26130258, 0.27577711))
+
     ])
 
     return transform
+
+
+def resize_bbox(bbox, original_size, new_size):
+    original_width, original_height = original_size
+    new_width, new_height = new_size
+
+    scale_x = new_width / original_width
+    scale_y = new_height / original_height
+
+    x1, y1, x2, y2 = bbox
+    
+    resized_bbox = [
+        x1 * scale_x,
+        y1 * scale_y,
+        x2 * scale_x,
+        y2 * scale_y
+    ]
+    # To tensor
+    resized_bbox = torch.tensor(resized_bbox, dtype=torch.float32)
+
+    return resized_bbox

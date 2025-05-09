@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-def eval_loop(data):
+def eval_loop_baseline(data):
     correct = 0
     total = 0
     iou_array = []
@@ -34,13 +34,47 @@ def eval_loop(data):
     return correct/total, np.asarray(iou_array).mean()
 
 
-def model_test(data):
-    model, preprocess = clip.load("RN50", device="cpu")
+def train_loop(model, data, optimizer, device):
+    model.train()
+    loss_array = []
+    for sample in tqdm(data, desc="Processing Training Dataset"):
+        images = sample["image"].to(device)
+        descriptions = sample["description"].to(device)
+        gt_bboxes = sample["bbox"].to(device)
 
-    vg = VisualLanguisticTranformer(model)
+        predicted_bboxes = model(images, descriptions)
+        
+        iou = calculate_IoU(gt_bboxes, predicted_bboxes)
+        loss = 1 - iou.mean()  # we wanna maximize the iou so we minimize 1-iou
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step() # Update the weights
 
-    with torch.no_grad(): # It used to avoid the creation of computational graph
-        for sample in tqdm(data, desc="Processing Test Data"):
-            tokens = clip.tokenize(sample['description'])
-            image = preprocess(sample['image']).unsqueeze(0)
-            vg(image, tokens)
+        loss_array.append(loss.item())
+    
+    return loss_array
+
+
+
+def eval_loop(model, dataloader, device):
+    model.eval()  # metti il modello in modalità evaluation
+    all_ious = []
+
+    with torch.no_grad():  # disabilita il tracking del gradiente
+        for sample in tqdm(dataloader, desc="Evaluating"):
+            images = sample["image"].to(device)
+            descriptions = sample["description"].to(device)
+            gt_bboxes = sample["bbox"].to(device)
+
+            # Predici le bbox
+            predicted_bboxes = model(images, descriptions)
+
+            # Calcola la IoU per ogni coppia predetta/ground-truth
+            ious = calculate_IoU(gt_bboxes, predicted_bboxes)
+
+            all_ious.extend(ious.tolist())  # aggiungili alla lista globale
+
+    # Calcola e ritorna la IoU media
+    mean_iou = sum(all_ious) / len(all_ious)
+    return mean_iou
