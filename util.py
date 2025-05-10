@@ -3,6 +3,7 @@ import json
 from PIL import Image, ImageDraw
 from torch.utils.data import DataLoader
 import torch
+import torch.nn as nn
 import torch.utils.data as data
 from torchvision import transforms
 import torchvision.transforms.functional as F
@@ -268,3 +269,18 @@ def resize_bbox(bbox, original_size, new_size):
     resized_bbox = torch.tensor(resized_bbox, dtype=torch.float32)
 
     return resized_bbox
+
+
+def init_weights(mat):
+    """
+    m: module (like "nn.Linear", "nn.LSTM")
+    m_name : name of the module (like "visual_projection_layer")
+    """
+    print(mat)
+    for m_name, m in mat.named_modules():
+        if type(m) in [nn.Linear]:
+            if "visual_projection_layer" in m_name or "richer_visual_projection_layer" in m_name or "textual_projection_layer" in m_name:
+                print(f'found {m_name}')
+                torch.nn.init.uniform_(m.weight, -0.01, 0.01)
+                if m.bias != None:
+                    m.bias.data.fill_(0.01)

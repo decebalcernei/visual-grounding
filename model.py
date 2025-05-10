@@ -38,6 +38,7 @@ class VisualLanguisticTranformer(nn.Module):
         self.clip_model.float() # -> defaulf is float16, and pytorch default is float32. with .float() we make everything float32
 
         self.visual_projection_layer = nn.Linear(2048, 256)
+        self.richer_visual_projection_layer = nn.Linear(3840, 256)
         self.textual_projection_layer = nn.Linear(1024, 256)
         self.positional_encoding = PositionalEncoding(d_model=256, seq_len=127, dropout=0.1)
         self.encoder_stack = build_encoder_stack(num_encoders=num_encoders, d_model=256, h=8, dropout=0.1, d_ff=2048)
@@ -48,13 +49,15 @@ class VisualLanguisticTranformer(nn.Module):
 
     def forward(self, image, text):
         #print(image.shape) # (batch_size, 3, 224, 224)
-        image_embeds = self.clip_model.visual(image) # (batch_size, 2048, 7, 7) # before modifying the visual (batch_size, 1024)
+        image_embeds = self.clip_model.visual(image, concat=True) # (batch_size, 2048, 7, 7) # before modifying the visual (batch_size, 1024)
         textual_mask = torch.where(text != 0, 1, 0) # 1 where the element is not PAD and 0 where it is
         text_embeds = self.clip_model.encode_text(text) # (batch_size, 77, 1024)
-        image_features_flattened = image_embeds.flatten(start_dim=2, end_dim=-1).permute(0, 2, 1) # (batch_size, 49, 2048)
+        image_features_flattened = image_embeds.flatten(start_dim=2, end_dim=-1).permute(0, 2, 1) # (batch_size, 49, 2048) or if we used concat=True (batch_size, 49, 3840)
         text_features_flattened = text_embeds # (batch_size, 77, 1024)
-
-        projected_visual = self.visual_projection_layer(image_features_flattened) # (batch_size, 49, 256)
+        if image_features_flattened.shape[2] == 2048:
+            projected_visual = self.visual_projection_layer(image_features_flattened) # (batch_size, 49, 256)
+        else:
+            projected_visual = self.richer_visual_projection_layer(image_features_flattened) # (batch_size, 49, 256)
         projected_textual = self.textual_projection_layer(text_features_flattened)  # (batch_size, 77, 256)
         reg_token = torch.zeros(projected_textual.shape[0], 1, projected_textual.shape[-1]).to(projected_textual.device) # (batch_size, 1, 256)
 
@@ -99,10 +102,18 @@ class PredictionHead(nn.Module):
         return x
 
 
-def modified_visual_forward(self, x: torch.Tensor):
+def modified_visual_forward(self, x: torch.Tensor, concat=False):
     """
         Open AI official implementation, we removed the last attention pooling layer
-        to keep more information
+        to keep more information.
+        If fuse = True we concatenate from multiple ResNet layers to provide much richer information.
+        - Multi-Scale visual information: first layers capture fine details while deeper layers capture higher-level features.
+        The intermediate layers have shape:
+            (batch_size, 256, 56, 56)
+            (batch_size, 512, 28, 28)
+            (batch_size, 1024, 14, 14)
+            (batch_size, 2048, 7, 7) -> last layer before the attention pooling
+        We want to concatenate them and end up with a tensor of (batch_size, 2048, 7, 7)
     """
     
     def stem(x):
@@ -114,12 +125,25 @@ def modified_visual_forward(self, x: torch.Tensor):
 
     x = x.type(self.conv1.weight.dtype)
     x = stem(x)
-    x = self.layer1(x)
-    x = self.layer2(x)
-    x = self.layer3(x)
-    x = self.layer4(x)
-    # x = self.attnpool(x) <- removed attention pooling layer
+    x = self.layer1(x) # (batch_size, 256, 56, 56)
+    x_layer1 = x
+    x = self.layer2(x) # (batch_size, 512, 28, 28)
+    x_layer2 = x
+    x = self.layer3(x) # (batch_size, 1024, 14, 14)
+    x_layer3 = x
+    x = self.layer4(x) # (batch_size, 2048, 7, 7)
 
+    if concat:
+        pool = nn.AdaptiveAvgPool2d((7, 7)) # (batch_size, x, d, d) -> (batch_size, x, 7, 7)
+        # (batch_size, 3840, 7, 7) [256+512+1024+2048]
+        x = torch.cat((pool(x_layer1),
+                      pool(x_layer2),
+                      pool( x_layer3),
+                      x), dim=1)
+        
+
+    # x = self.attnpool(x) <- removed attention pooling layer
+    # now x can have shape (batch_size, 2048, 7, 7) or (batch_size, 3840, 7, 7)
     return x
 
 
