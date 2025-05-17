@@ -1,3 +1,4 @@
+import argparse
 import pandas as pd
 import json
 from PIL import Image, ImageDraw
@@ -5,6 +6,7 @@ from torch.utils.data import DataLoader
 import torch
 import torch.nn as nn
 import torch.utils.data as data
+import torchvision
 from torchvision import transforms
 import torchvision.transforms.functional as F
 
@@ -73,7 +75,7 @@ def modify_filename(file_name):
 
 class VisualGroundingRefcocog(data.Dataset):
     # Mandatory methods are __init__, __len__ and __getitem__
-    def __init__(self, dataset, tokenizer, modified_clip_preprocess=None, bbox_transform=None):
+    def __init__(self, dataset, tokenizer, prefix_description=None, modified_clip_preprocess=None, bbox_transform=None):
         
         self.images = dataset['file_name'].tolist()
         self.descriptions = dataset['sentences'].tolist()
@@ -81,6 +83,7 @@ class VisualGroundingRefcocog(data.Dataset):
         self.transform = modified_clip_preprocess
         self.bbox_transform = bbox_transform
         self.tokenizer = tokenizer
+        self.prefix_description = prefix_description
 
 
     def __len__(self):
@@ -89,7 +92,7 @@ class VisualGroundingRefcocog(data.Dataset):
 
     def __getitem__(self, idx):
 
-        image = Image.open(self.images[idx])
+        image = Image.open(self.images[idx])#.convert("RGB")
         description = self.descriptions[idx]
         bbox = self.bboxes[idx]
 
@@ -99,10 +102,9 @@ class VisualGroundingRefcocog(data.Dataset):
             and we dont want that. We want to keep the whole image and not risk to cut away our
             object of interest.
         """
-        #path_saving_folder = "/home/dec/uni/dl/visual-grounding/tests"
-        #original_path = path_saving_folder + "/original_no_normalization.png"
-        #resized_path = path_saving_folder + "/resized_no_normalization.png"
 
+        if self.prefix_description is not None:
+            description = self.prefix_description + description
         description = self.tokenizer(description).squeeze() # (1, 77) -> (77)
 
         if self.transform:
@@ -158,7 +160,29 @@ def calculate_IoU(x_bbox, y_bbox):
     union = area_x + area_y - intersection
 
     iou = intersection / union.clamp(min=1e-6)
+
     return iou
+
+
+def criterion_iou(x_bbox, target_bbox, l1_weight=1.0, giou_weight=1.0):
+    """
+    Combines Smooth L1 loss e CIoU loss for bbox coordinates regression.
+    l1_weight: smooth_l1 weigh
+    giou_weight: CIoU weight
+    beta: param for the smooth_l1 loss
+    """
+    # Both sets of boxes are expected to be in (x1, y1, x2, y2) format with 0 <= x1 < x2 and 0 <= y1 < y2
+    # and The two boxes should have the same dimensions.
+    ciou = torchvision.ops.complete_box_iou_loss(x_bbox, target_bbox, reduction='mean')
+
+    l1 = nn.functional.smooth_l1_loss(x_bbox, target_bbox)
+    #print(f"SmoothL1: {l1_weight * l1.item():.2f}, CIoU: {giou_weight * ciou.item():.2f}, Total: {(l1 + ciou).item():.2f}")
+    return l1_weight * l1 + giou_weight * ciou
+
+
+def only_ciou(x_bbox, target_bbox):
+    ciou = torchvision.ops.complete_box_iou_loss(x_bbox, target_bbox, reduction='mean')
+    return ciou
 
 
 def xywh2xyxy(bbox):
@@ -172,13 +196,33 @@ def xywh2xyxy(bbox):
             updated_bbox = [x, y, x, y]
     '''
     xmin, ymin, w, h = bbox
-    
+
     xmax = xmin + w
     ymax = ymin + h
-    
+
     updated_bbox = [xmin, ymin, xmax, ymax]
 
     return updated_bbox
+
+
+def cxcywh_to_xyxy(bboxes):
+    """
+    Converts a batch of bboxes from (center_x, center_y, width, height) to (x_min, y_min, x_max, y_max)
+    """
+    # faster than using x_bbox[:, 0], y_bbox[:, 0]
+    cx, cy, w, h = bboxes.unbind(-1)
+    
+    w_half = w / 2.0
+    h_half = h / 2.0
+    
+    x1 = cx - w_half
+    y1 = cy - h_half
+    x2 = cx + w_half
+    y2 = cy + h_half
+
+    return torch.stack([x1, y1, x2, y2], dim=-1)
+
+
 
 
 def draw_bbox(image, bbox, color, save_path=None, caption=None):
@@ -217,7 +261,7 @@ def compare_bbox(image, pred_bbox, label_bbox, caption=None, color1="green", col
     image.show()
 
 
-def modified_clip_preprocess():
+def modified_clip_preprocess(keep_aspect_ratio):
     """
     The original CLIP's preprocess is the following:
     Compose(
@@ -238,35 +282,87 @@ def modified_clip_preprocess():
 
     transforms.Lambda(convert_rgb)
     """
-    transform = transforms.Compose([
-        transforms.Resize(size=(224, 224), interpolation=Image.BICUBIC, antialias=True),
-        transforms.Lambda(lambda img: img.convert("RGB")),  # to rgb
+
+    def resize_pad(img):
+        # Resize mantaining the same aspect ratio (longest dim = 224)
+        width, height = img.size
+        if width >= height:
+            new_width = 224
+            new_height = int(224 * height / width)
+        else:
+            new_height = 224
+            new_width = int(224 * width / height)
+        
+        resized_img = img.resize((new_width, new_height), resample=Image.BICUBIC)
+        
+        # Centered Padding to obtain 224x224
+        pad_width = 224 - new_width
+        pad_height = 224 - new_height
+        padding = (
+            pad_width // 2, 
+            pad_height // 2, 
+            pad_width - (pad_width // 2), 
+            pad_height - (pad_height // 2)
+        )
+        return transforms.functional.pad(resized_img, padding, fill=0, padding_mode="constant")
+
+
+    transform_steps = []
+    
+    if keep_aspect_ratio:
+        transform_steps.append(transforms.Lambda(resize_pad))
+    else:
+        transform_steps.append(transforms.Resize((224, 224), interpolation=Image.BICUBIC, antialias=True)) #-> this stretches the image
+ 
+    transform_steps.extend([
+        transforms.Lambda(lambda img: img.convert("RGB")), # to rgb
         transforms.ToTensor(), # from PIL image to tensor
-        #transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073),
-                  #std=(0.26862954, 0.26130258, 0.27577711))
-
+        transforms.Normalize(
+            mean=(0.48145466, 0.4578275, 0.40821073),
+            std=(0.26862954, 0.26130258, 0.27577711)
+        )
     ])
+    
+    return transforms.Compose(transform_steps)
 
-    return transform
 
-
-def resize_bbox(bbox, original_size, new_size):
+def resize_bbox(bbox, original_size, new_size, keep_aspect_ratio):
     original_width, original_height = original_size
     new_width, new_height = new_size
+    norm = max(new_height, new_width) # in our case, wehere new size is 224, 224 will be 224
 
-    scale_x = new_width / original_width
-    scale_y = new_height / original_height
+    if keep_aspect_ratio:
+        if original_width >= original_height:
+            resized_width = 224
+            resized_height = int(224 * original_height / original_width)
+        else:
+            resized_height = 224
+            resized_width = int(224 * original_width / original_height)
+        scale_x = resized_width / original_width
+        scale_y = resized_height / original_height
+        
+        # padding
+        pad_left = (224 - resized_width) // 2
+        pad_top = (224 - resized_height) // 2
+    else:
+        scale_x = new_width / original_width
+        scale_y = new_height / original_height
+        # we do not have any padding
+        pad_left = 0
+        pad_top = 0
 
     x1, y1, x2, y2 = bbox
     
     resized_bbox = [
-        x1 * scale_x,
-        y1 * scale_y,
-        x2 * scale_x,
-        y2 * scale_y
+        x1 * scale_x + pad_left,
+        y1 * scale_y + pad_top,
+        x2 * scale_x + pad_left,
+        y2 * scale_y + pad_top
     ]
     # To tensor
     resized_bbox = torch.tensor(resized_bbox, dtype=torch.float32)
+    # Normalize the bbox between 0 and 1
+    resized_bbox = resized_bbox / norm
 
     return resized_bbox
 
@@ -276,11 +372,41 @@ def init_weights(mat):
     m: module (like "nn.Linear", "nn.LSTM")
     m_name : name of the module (like "visual_projection_layer")
     """
-    print(mat)
     for m_name, m in mat.named_modules():
         if type(m) in [nn.Linear]:
             if "visual_projection_layer" in m_name or "richer_visual_projection_layer" in m_name or "textual_projection_layer" in m_name:
-                print(f'found {m_name}')
                 torch.nn.init.uniform_(m.weight, -0.01, 0.01)
                 if m.bias != None:
                     m.bias.data.fill_(0.01)
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def save_checkpoint(model, optimizer, epoch, loss, path="checkpoint.pth"):
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss,
+    }, path)
+    print(f"Checkpoint saved to {path}")
+
+
+def load_checkpoint(model, optimizer, path="checkpoint.pth"):
+    checkpoint = torch.load(path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    epoch = checkpoint['epoch']
+    loss = checkpoint['loss']
+    
+    print(f"Resuming from epoch {epoch} with loss {loss}")
+    return model, optimizer, epoch, loss

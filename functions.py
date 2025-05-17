@@ -1,7 +1,7 @@
 import torch
 import clip
 from baseline import yolo_inference, clip_inference
-from util import calculate_IoU, compare_bbox, draw_bbox
+from util import calculate_IoU, cxcywh_to_xyxy, compare_bbox, draw_bbox
 from tqdm import tqdm
 import numpy as np
 from types import SimpleNamespace
@@ -31,18 +31,19 @@ def eval_loop_baseline(clip_model, clip_preprocess, yolo_model, data):
     return correct/total, np.asarray(iou_array).mean()
 
 
-def train_loop(model, data, optimizer, device):
+def train_loop(model, data, optimizer, criterion_iou, device):
     model.train()
     loss_array = []
-    for sample in tqdm(data, desc="Processing Training Dataset"):
+    #for sample in tqdm(data, desc="Processing Training Dataset"):
+    for sample in data:
         images = sample["image"].to(device)
         descriptions = sample["description"].to(device)
         gt_bboxes = sample["bbox"].to(device)
 
         predicted_bboxes = model(images, descriptions)
+        predicted_bboxes = cxcywh_to_xyxy(predicted_bboxes)
+        loss = criterion_iou(gt_bboxes, predicted_bboxes)
         
-        iou = calculate_IoU(gt_bboxes, predicted_bboxes)
-        loss = 1 - iou.mean()  # we wanna maximize the iou so we minimize 1-iou
         
         optimizer.zero_grad()
         loss.backward()
@@ -57,18 +58,25 @@ def train_loop(model, data, optimizer, device):
 def eval_loop(model, dataloader, device):
     model.eval()
     all_ious = []
+    correct = 0
+    total = 0
 
     with torch.no_grad():
-        for sample in tqdm(dataloader, desc="Evaluating"):
+        #for sample in tqdm(dataloader, desc="Evaluating"):
+        for sample in dataloader:
             images = sample["image"].to(device)
             descriptions = sample["description"].to(device)
             gt_bboxes = sample["bbox"].to(device)
 
             predicted_bboxes = model(images, descriptions)
-
+            predicted_bboxes = cxcywh_to_xyxy(predicted_bboxes)
             ious = calculate_IoU(gt_bboxes, predicted_bboxes)
 
             all_ious.extend(ious.tolist())
 
+            correct += (ious > 0.5).sum().item()
+            total += ious.size(0)
+
+    accuracy = correct / total
     mean_iou = sum(all_ious) / len(all_ious)
-    return mean_iou
+    return mean_iou, accuracy
