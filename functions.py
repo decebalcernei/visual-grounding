@@ -1,10 +1,9 @@
 import torch
 import clip
 from baseline import yolo_inference, clip_inference
-from util import calculate_IoU, cxcywh_to_xyxy, compare_bbox, draw_bbox
+from util import calculate_IoU, cxcywh_to_xyxy, compare_bbox, draw_bbox, denormalize_data
 from tqdm import tqdm
 import numpy as np
-from types import SimpleNamespace
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -70,6 +69,17 @@ def eval_loop(model, dataloader, device):
 
             predicted_bboxes = model(images, descriptions)
             predicted_bboxes = cxcywh_to_xyxy(predicted_bboxes)
+            
+            """
+            for i, image in enumerate(images):
+                image = image.to('cpu')
+                image, pred_bbox, label_bbox, description = denormalize_data(image, predicted_bboxes[i].to('cpu').numpy(), gt_bboxes[i].to('cpu').numpy(), descriptions[i].to('cpu').numpy())
+
+                path = f'/home/dec/uni/dl/visual-grounding/tests/image_{i}.png'
+                compare_bbox(image, pred_bbox, label_bbox, save_path=path, caption=description, color1="green", color2="red")
+            exit()
+            """
+
             ious = calculate_IoU(gt_bboxes, predicted_bboxes)
 
             all_ious.extend(ious.tolist())

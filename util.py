@@ -1,7 +1,10 @@
 import argparse
 import pandas as pd
 import json
+from clip.simple_tokenizer import SimpleTokenizer
 from PIL import Image, ImageDraw
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from torch.utils.data import DataLoader
 import torch
 import torch.nn as nn
@@ -246,19 +249,68 @@ def draw_bbox(image, bbox, color, save_path=None, caption=None):
 
 
 
-def compare_bbox(image, pred_bbox, label_bbox, caption=None, color1="green", color2="red"):
+def compare_bbox(image, pred_bbox, label_bbox, save_path=None, caption=None, color1="green", color2="red"):
     #img = Image.open(image_path)
     
     xmin1, ymin1, xmax1, ymax1 = label_bbox
     xmin2, ymin2, xmax2, ymax2 = pred_bbox
+
+    if isinstance(image, torch.Tensor):
+        image = F.to_pil_image(image)
+    
+    fig, ax = plt.subplots(1)
+    ax.imshow(image)
+    
+    # Create rectangle patches
+    rect1 = patches.Rectangle((xmin1, ymin1),
+                             xmax1-xmin1,
+                             ymax1-ymin1,
+                             linewidth=2,
+                             edgecolor=color1,
+                             facecolor='none')
+    # Predicted one
+    rect2 = patches.Rectangle((xmin2, ymin2),
+                             xmax2-xmin2,
+                             ymax2-ymin2,
+                             linewidth=2,
+                             edgecolor=color2,
+                             facecolor='none')
+    
+    # Add rectangles to axes
+    ax.add_patch(rect1)
+    ax.add_patch(rect2)
+    
+    # Add description
+    if caption is not None:
+        plt.suptitle(caption, fontsize=8)
+    ax.axis('off')
+
+    if save_path is not None:
+        plt.savefig(save_path)
+    else:
+        plt.show()
+
+    
+
+def compare_bbox_old(image, pred_bbox, label_bbox, save_path=None, caption=None, color1="green", color2="red"):
+    #img = Image.open(image_path)
+    
+    xmin1, ymin1, xmax1, ymax1 = label_bbox
+    xmin2, ymin2, xmax2, ymax2 = pred_bbox
+
+    if isinstance(image, torch.Tensor):
+        image = F.to_pil_image(image)
     
     draw = ImageDraw.Draw(image)
     draw.rectangle([xmin1, ymin1, xmax1, ymax1], outline=color1, width=3)
     draw.rectangle([xmin2, ymin2, xmax2, ymax2], outline=color2, width=3)
     if caption is not None:
-        draw.text((5, 5), caption, fill="white")
+        draw.text((1, 1), caption, fill="white", stroke_width=0.1)
     
-    image.show()
+    if save_path is not None:
+        image.save(save_path)
+    else:
+        image.show()
 
 
 def modified_clip_preprocess(keep_aspect_ratio):
@@ -365,6 +417,37 @@ def resize_bbox(bbox, original_size, new_size, keep_aspect_ratio):
     resized_bbox = resized_bbox / norm
 
     return resized_bbox
+
+
+
+def denormalize_data(image, bbox1, bbox2, description):
+    """
+        Inverts the normalization we applied to the data
+        for a meaningful visualization.
+    """
+    CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+    CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+    image = image.clone()
+    
+    # denorm channel by channel
+    for t, mean, std in zip(image, CLIP_MEAN, CLIP_STD):
+        t.mul_(std).add_(mean)
+    
+    # Clamp the values between 0 and 1
+    image = torch.clamp(image, 0, 1)
+
+    bbox1 = bbox1 * 224
+    bbox2 = bbox2 * 224
+
+    tokenizer = SimpleTokenizer()
+    description = description.tolist()
+    eos_index = description.index(49407)
+    description = description[1:eos_index]
+    
+    decoded_text = tokenizer.decode(description)
+
+    return image, bbox1, bbox2, decoded_text
+
 
 
 def init_weights(mat):
