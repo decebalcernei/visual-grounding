@@ -6,6 +6,7 @@ from tqdm import tqdm
 from model import VisualLanguisticTranformer
 import clip
 import torch
+import copy
 import numpy as np
 import torchvision
 
@@ -61,15 +62,22 @@ def main(args):
     print(f'start_chekcpoint {start_checkpoint}, and saving on {end_checkpoint}')
     if start_checkpoint != "none":
         model, optimizer, start_epoch, loss = load_checkpoint(model, optimizer, f"bin/checkpoint_{start_checkpoint}.pth")
+        print(f'correctly loaded!')
     else:
         start_epoch = 0
-    #mean_iou, accuracy = eval_loop(model, test_dataloader, device=DEVICE)
-    #print(f'mean iou on test set is {mean_iou} --- accuracy = {accuracy}')
-    #exit()
+    mean_iou, accuracy = eval_loop(model, test_dataloader, device=DEVICE)
+    print(f'mean iou on test set is {mean_iou} --- accuracy = {accuracy}')
+    exit()
     total_epochs = start_epoch + n_epochs
+
+    ### For the MRC loss
+    momentum_model = copy.deepcopy(model)
+    for param in momentum_model.parameters():
+        param.requires_grad = False  # no backprop
+
     #for epoch in tqdm(range(start_epoch +1 , total_epochs+1)):
     for epoch in range(start_epoch +1 , total_epochs+1):
-        loss = train_loop(model, train_dataloader, optimizer, criterion, device=DEVICE)
+        loss = train_loop(model, momentum_model, train_dataloader, optimizer, criterion, device=DEVICE)
         print(f'loss at epoch {epoch} is {np.asarray(loss).mean()}')
         if epoch % 2 == 0: # We check the performance every 3 epochs
             mean_iou, accuracy = eval_loop(model, val_dataloader, device=DEVICE)
@@ -98,8 +106,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Visual Grounding using CLIP and Transformer one stage approach.')
     
     # Add arguments
-    parser.add_argument('--batch_size', default="128", type=int, help='batch size of training')
-    parser.add_argument('--epochs', default="30", type=int, help='number of epochs')
+    parser.add_argument('--batch_size', default="32", type=int, help='batch size of training')
+    parser.add_argument('--epochs', default="10", type=int, help='number of epochs')
     parser.add_argument('--optimizer', default="AdamW", help="select 'Adam' or 'sgd' or 'AdamW'")
     parser.add_argument('--learning_rate', default="0.0001", type=float, help='learning rate of the model')
     parser.add_argument('--patience', default="3", type=int, help='patience of the model')

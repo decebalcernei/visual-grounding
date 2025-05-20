@@ -1,7 +1,8 @@
+import math
 import torch
-import clip
+import copy
 from baseline import yolo_inference, clip_inference
-from util import calculate_IoU, cxcywh_to_xyxy, compare_bbox, draw_bbox, denormalize_data
+from util import calculate_IoU, cxcywh_to_xyxy, compare_bbox, draw_bbox, denormalize_data, rac_loss, mrc_loss, spearmanr_batch, compute_relative_rho, criterion_iou, update_momentum
 from tqdm import tqdm
 import numpy as np
 
@@ -30,23 +31,52 @@ def eval_loop_baseline(clip_model, clip_preprocess, yolo_model, data):
     return correct/total, np.asarray(iou_array).mean()
 
 
-def train_loop(model, data, optimizer, criterion_iou, device):
+def train_loop(model, student_model, data, optimizer, criterion_iou, device):
     model.train()
     loss_array = []
+
+
     #for sample in tqdm(data, desc="Processing Training Dataset"):
     for sample in data:
         images = sample["image"].to(device)
         descriptions = sample["description"].to(device)
         gt_bboxes = sample["bbox"].to(device)
+        bbox_mask = sample["bbox_mask"].to(device)
+        bbox_ratio = sample["bbox_ratio"].to(device)
 
-        predicted_bboxes = model(images, descriptions)
+
+        predicted_bboxes, all_attentions = model(images, descriptions)
         predicted_bboxes = cxcywh_to_xyxy(predicted_bboxes)
-        loss = criterion_iou(gt_bboxes, predicted_bboxes)
-        
-        
+
+        with torch.no_grad():
+            _, all_attentions_mom = student_model(images, descriptions)
+
+        rhos = {}
+        for i, layer in enumerate(all_attentions):
+            rhos[i] = spearmanr_batch(layer, bbox_mask)
+        relative_rhos = compute_relative_rho(rhos)
+        l_rac = rac_loss(relative_rhos, all_attentions, bbox_mask)
+        teacher_attentions = torch.stack(all_attentions)
+        student_attentions = torch.stack(all_attentions_mom)
+        # be careful that the kl divergence is not symmetric, first student, second teacher
+        l_mrc = mrc_loss(student_attentions, teacher_attentions)
+
+        l_ar = l_rac + l_mrc
+
+        w_adw = 0.5 + 1 / (1 + math.exp(-l_ar))
+        #w_odw = 0.5 + 1 / (1 + math.exp(bbox_ratio-1))
+        w_odw = 1
+
+
+        loss_second_part = criterion_iou(gt_bboxes, predicted_bboxes)
+        loss = l_ar + ((w_adw * w_odw) * loss_second_part)
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step() # Update the weights
+
+        ### update the weights from teacher model to student one
+        update_momentum(model, student_model)
 
         loss_array.append(loss.item())
     
@@ -67,9 +97,10 @@ def eval_loop(model, dataloader, device):
             descriptions = sample["description"].to(device)
             gt_bboxes = sample["bbox"].to(device)
 
-            predicted_bboxes = model(images, descriptions)
-            predicted_bboxes = cxcywh_to_xyxy(predicted_bboxes)
             
+            #predicted_bboxes, all_attentions = model(images, descriptions)
+            predicted_bboxes, _ = model(images, descriptions)
+            predicted_bboxes = cxcywh_to_xyxy(predicted_bboxes)        
             """
             for i, image in enumerate(images):
                 image = image.to('cpu')
