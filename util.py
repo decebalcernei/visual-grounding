@@ -13,6 +13,7 @@ import torchvision
 from torchvision import transforms
 import torchvision.transforms.functional as F
 from scipy import stats
+import ast
 
 
 def create_merged_df(pickle_file_path, annotations_file_path):
@@ -83,6 +84,7 @@ class VisualGroundingRefcocog(data.Dataset):
         
         self.images = dataset['file_name'].tolist()
         self.descriptions = dataset['sentences'].tolist()
+        #self.bboxes = [xywh2xyxy(ast.literal_eval(bbox)) for bbox in dataset['bbox'].tolist()]
         self.bboxes = [xywh2xyxy(bbox) for bbox in dataset['bbox'].tolist()]
         self.transform = modified_clip_preprocess
         self.bbox_transform = bbox_transform
@@ -552,7 +554,7 @@ def compute_softmax_mean_heads_attention(attention_all_heads):
     softmax_result = mean_result.softmax(dim = -1)
     # (batch_size, seq_len, seq_len) -> (batch_size, 49) ## only reg-visual tokens
     reg_visual_attention = softmax_result[:, -1, :49]
-    
+
     return reg_visual_attention
 
 
