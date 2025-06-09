@@ -67,16 +67,15 @@ def main(args):
     #print(f'mean iou on test set is {mean_iou} --- accuracy = {accuracy}')
     #exit()
     total_epochs = start_epoch + n_epochs
-    #for epoch in tqdm(range(start_epoch +1 , total_epochs+1)):
-    for epoch in range(start_epoch +1 , total_epochs+1):
+    for epoch in tqdm(range(start_epoch +1 , total_epochs+1)):
+    #for epoch in range(start_epoch +1 , total_epochs+1):
         loss = train_loop(model, train_dataloader, optimizer, criterion, device=DEVICE)
         print(f'loss at epoch {epoch} is {np.asarray(loss).mean()}')
         if epoch % 2 == 0: # We check the performance every 3 epochs
             mean_iou, accuracy = eval_loop(model, val_dataloader, device=DEVICE)
             print(f'mean_iou at epoch {epoch} = {mean_iou} --- accuracy = {accuracy}')
-    n_epochs += 5
     if end_checkpoint != "none":
-        save_checkpoint(model, optimizer, n_epochs, loss, f"bin/checkpoint_{end_checkpoint}.pth")
+        save_checkpoint(model, optimizer, total_epochs, loss, f"bin/checkpoint_{end_checkpoint}.pth")
     mean_iou, accuracy = eval_loop(model, test_dataloader, device=DEVICE)
     print(f'mean iou on test set is {mean_iou} --- accuracy = {accuracy}')
 
@@ -99,7 +98,7 @@ if __name__ == "__main__":
     
     # Add arguments
     parser.add_argument('--batch_size', default="128", type=int, help='batch size of training')
-    parser.add_argument('--epochs', default="30", type=int, help='number of epochs')
+    parser.add_argument('--epochs', default="50", type=int, help='number of epochs')
     parser.add_argument('--optimizer', default="AdamW", help="select 'Adam' or 'sgd' or 'AdamW'")
     parser.add_argument('--learning_rate', default="0.0001", type=float, help='learning rate of the model')
     parser.add_argument('--patience', default="3", type=int, help='patience of the model')

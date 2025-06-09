@@ -33,8 +33,8 @@ def eval_loop_baseline(clip_model, clip_preprocess, yolo_model, data):
 def train_loop(model, data, optimizer, criterion_iou, device):
     model.train()
     loss_array = []
-    #for sample in tqdm(data, desc="Processing Training Dataset"):
-    for sample in data:
+    for sample in tqdm(data, desc="Processing Training Dataset"):
+    #for sample in data:
         images = sample["image"].to(device)
         descriptions = sample["description"].to(device)
         gt_bboxes = sample["bbox"].to(device)
@@ -61,8 +61,8 @@ def eval_loop(model, dataloader, device):
     total = 0
 
     with torch.no_grad():
-        #for sample in tqdm(dataloader, desc="Evaluating"):
-        for sample in dataloader:
+        for sample in tqdm(dataloader, desc="Evaluating"):
+        #for sample in dataloader:
             images = sample["image"].to(device)
             descriptions = sample["description"].to(device)
             gt_bboxes = sample["bbox"].to(device)
