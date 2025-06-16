@@ -24,10 +24,9 @@ def main(args):
     learning_rate = args.learning_rate
     optimizers = {'Adam': torch.optim.Adam, 'AdamW': torch.optim.AdamW, 'sgd': torch.optim.SGD}
 
-    if args.criterion == 'both':
-        criterion = criterion_iou
-    else:
-        criterion = only_ciou
+    selected_loss = args.criterion
+
+    verbose = args.verbose
 
     
     annotations_file_path = 'dataset/refcocog/annotations/instances.json'
@@ -61,29 +60,36 @@ def main(args):
     model.apply(init_weights)
     model.to(DEVICE)
     optimizer = optimizers[args.optimizer](model.parameters(), lr=learning_rate)
-    print(f'start_chekcpoint {start_checkpoint}, and saving on {end_checkpoint}')
+    if verbose:
+        print(f'start_checkpoint {start_checkpoint}, and saving on {end_checkpoint}')
     if start_checkpoint != "none":
         model, optimizer, start_epoch, loss = load_checkpoint(model, optimizer, f"bin/checkpoint_{start_checkpoint}.pth")
-        print(f'correctly loaded!')
+        if verbose:
+            print(f'{start_checkpoint} correctly loaded!')
     else:
         start_epoch = 0
-    mean_iou, accuracy = eval_loop(model, test_dataloader, device=DEVICE)
-    print(f'mean iou on test set is {mean_iou} --- accuracy = {accuracy}')
+    #mean_iou, accuracy = eval_loop(model, test_dataloader, device=DEVICE)
+    #print(f'mean iou on test set is {mean_iou} --- accuracy = {accuracy}')
     #exit()
     total_epochs = start_epoch + n_epochs
 
     ### For the MRC loss
-    momentum_model = copy.deepcopy(model)
-    for param in momentum_model.parameters():
-        param.requires_grad = False  # no backprop
+    if selected_loss == 'att_reg':
+        momentum_model = copy.deepcopy(model)
+        for param in momentum_model.parameters():
+            param.requires_grad = False  # no backprop
+    else:
+        momentum_model = None
 
     for epoch in tqdm(range(start_epoch +1 , total_epochs+1)):
     #for epoch in range(start_epoch +1 , total_epochs+1):
-        loss = train_loop(model, momentum_model, train_dataloader, optimizer, criterion, device=DEVICE)
-        print(f'loss at epoch {epoch} is {np.asarray(loss).mean()}')
+        loss = train_loop(model, momentum_model, train_dataloader, optimizer, criterion_iou, device=DEVICE, selected_loss=selected_loss)
+        if verbose:
+            print(f'loss at epoch {epoch} is {np.asarray(loss).mean()}')
         if epoch % 2 == 0: # We check the performance every 3 epochs
             mean_iou, accuracy = eval_loop(model, val_dataloader, device=DEVICE)
-            print(f'mean_iou at epoch {epoch} = {mean_iou} --- accuracy = {accuracy}')
+            if verbose:
+                print(f'mean_iou at epoch {epoch} = {mean_iou} --- accuracy = {accuracy}')
     if end_checkpoint != "none":
         save_checkpoint(model, optimizer, total_epochs, loss, f"bin/checkpoint_{end_checkpoint}.pth")
     mean_iou, accuracy = eval_loop(model, test_dataloader, device=DEVICE)
@@ -112,9 +118,10 @@ if __name__ == "__main__":
     parser.add_argument('--optimizer', default="AdamW", help="select 'Adam' or 'sgd' or 'AdamW'")
     parser.add_argument('--learning_rate', default="0.0001", type=float, help='learning rate of the model')
     parser.add_argument('--patience', default="3", type=int, help='patience of the model')
-    parser.add_argument('--criterion', default="both", help="select 'both' or 'ciou'")
+    parser.add_argument('--criterion', default="normal", help="select 'normal' or 'att_reg'")
     parser.add_argument('--start_checkpoint', default="none", help="name of the checkpoint to be loaded")
     parser.add_argument('--end_checkpoint', default="none", help="name of the checkpoint to be saved")
+    parser.add_argument('--verbose', default=False, type=str2bool, help="verbose or not")
 
 
     

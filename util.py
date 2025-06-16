@@ -655,6 +655,6 @@ def mrc_loss(student_attentions, teacher_attentions):
 
 
 @torch.no_grad()
-def update_momentum(model, momentum_model, m=0.995):
+def update_momentum(model, momentum_model, m=0.9):
     for param_q, param_k in zip(model.parameters(), momentum_model.parameters()):
         param_k.data = param_k.data * m + param_q.data * (1. - m)
